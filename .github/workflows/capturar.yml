@@ -1,0 +1,42 @@
+# Capturador de Work: Work lo lanza con un trabajo (entrar a una cuenta demo o sacar una captura) y el runner habla
+# con Work con el secreto CAPTURER_SECRET. Durante una captura solo lee: nunca crea, cambia ni gasta nada en la app.
+name: Capturador
+
+on:
+  workflow_dispatch:
+    inputs:
+      job_id:
+        description: "Trabajo de captura (lo crea Work)"
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: capturador-${{ inputs.job_id }}
+
+jobs:
+  capturar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Navegador en caché
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-1.52.0
+      - name: Instalar Playwright
+        run: |
+          npm install --no-audit --no-fund
+          npx playwright install --with-deps chromium
+      - name: Capturar
+        env:
+          WORK_URL: https://work.inmoescala.com
+          CAPTURER_SECRET: ${{ secrets.CAPTURER_SECRET }}
+          JOB_ID: ${{ inputs.job_id }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: node capturar.mjs

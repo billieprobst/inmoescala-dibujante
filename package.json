@@ -1,0 +1,9 @@
+{
+  "name": "inmoescala-dibujante",
+  "private": true,
+  "type": "module",
+  "description": "Solo dibuja y captura imágenes para Work de Inmoescala. No guarda llaves ni datos.",
+  "dependencies": {
+    "playwright": "1.52.0"
+  }
+}

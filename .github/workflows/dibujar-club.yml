@@ -1,0 +1,43 @@
+# Dibujante de Inmoescala Club: Work lo lanza con una pieza y el runner saca las PNG de cada slide e historia y el
+# video de portada (dibujar-club.mjs). Habla con Work con el secreto CAPTURER_SECRET.
+name: Dibujante Inmoescala Club
+
+on:
+  workflow_dispatch:
+    inputs:
+      piece_id:
+        description: "Pieza de Inmoescala Club (la crea Work)"
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dibujar-${{ inputs.piece_id }}
+
+jobs:
+  dibujar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Navegador en caché
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-1.52.0
+      - name: Instalar Playwright y ffmpeg
+        run: |
+          npm install --no-audit --no-fund
+          npx playwright install --with-deps chromium
+          which ffmpeg || (sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends ffmpeg)
+      - name: Dibujar
+        env:
+          WORK_URL: https://work.inmoescala.com
+          CAPTURER_SECRET: ${{ secrets.CAPTURER_SECRET }}
+          PIECE_ID: ${{ inputs.piece_id }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: node dibujar-club.mjs
