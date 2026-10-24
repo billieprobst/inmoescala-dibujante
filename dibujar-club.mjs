@@ -35,11 +35,13 @@ async function save(name, buffer, contentType) {
   return publicUrl;
 }
 
-/** Video de 6 s: la foto se acerca hasta 7 % y vuelve (en bucle no se nota el corte); el texto va encima, quieto. */
+/** Video de 6 s: la foto se acerca hasta 6 % y vuelve, suave (en bucle no se nota el corte); el texto va encima, quieto. */
 function coverVideo(photo, text, out) {
   const r = spawnSync("ffmpeg", [
     "-y", "-loop", "1", "-framerate", "30", "-i", photo, "-loop", "1", "-framerate", "30", "-i", text,
-    "-filter_complex", "[0:v]scale=2160:-1,zoompan=z='1+0.07*sin(PI*on/180)':x='iw/2-(iw/zoom/2)':y='ih*0.32-(ih*0.32/zoom)':d=1:s=1080x1440:fps=30[bg];[bg][1:v]overlay=0:0,format=yuv420p",
+    // Se calcula sobre la foto 4 veces más grande (pasos de ¼ de píxel, sin temblor) y con curva suave (arranca y frena
+    // despacio), así el bucle no se nota. Acercamiento máximo 6 %, con el foco a un tercio de la altura.
+    "-filter_complex", "[0:v]scale=4320:-1:flags=lanczos,zoompan=z='1+0.06*(1-cos(2*PI*on/180))/2':x='iw/2-(iw/zoom/2)':y='ih*0.32-(ih*0.32/zoom)':d=1:s=1080x1440:fps=30[bg];[bg][1:v]overlay=0:0,format=yuv420p",
     "-t", "6", "-c:v", "libx264", "-preset", "medium", "-crf", "20", "-movflags", "+faststart", "-an", out,
   ], { encoding: "utf8" });
   if (r.status !== 0) throw new Error(`ffmpeg falló: ${(r.stderr ?? "").slice(-400)}`);
