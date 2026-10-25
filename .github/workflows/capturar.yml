@@ -29,10 +29,12 @@ jobs:
         with:
           path: ~/.cache/ms-playwright
           key: playwright-1.52.0
-      - name: Instalar Playwright
+      # Sin apt: el runner ya trae las librerías del navegador (con «--with-deps» se colgó 15 min el 2026-10-25).
+      - name: Instalar Playwright (sin apt)
+        timeout-minutes: 5
         run: |
           npm install --no-audit --no-fund
-          npx playwright install --with-deps chromium
+          npx playwright install chromium
       - name: Capturar
         env:
           WORK_URL: https://work.inmoescala.com
