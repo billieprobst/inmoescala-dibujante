@@ -47,6 +47,75 @@ function coverVideo(photo, text, out) {
   if (r.status !== 0) throw new Error(`ffmpeg falló: ${(r.stderr ?? "").slice(-400)}`);
 }
 
+function ff(args) {
+  const r = spawnSync("ffmpeg", ["-loglevel", "error", "-y", ...args], { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
+  if (r.status !== 0) throw new Error(`ffmpeg falló: ${(r.stderr ?? "").slice(-500)}`);
+}
+
+/**
+ * Reel b-roll del Club (2026-10-25). Work manda las capas (velo, texto, tarjetas, insignia y la máscara del vidrio) como
+ * cuadros transparentes de 1080×1920 y el plan de tiempos en window.__reel. Se bajan las tomas, se cortan y se pegan,
+ * se pone el vidrio desenfocado debajo de la tarjeta y cada capa entra con un fundido corto y sube unos px.
+ * Hilos limitados: ffmpeg con muchas entradas de imagen se queda sin memoria si no.
+ */
+async function reel(page, spec, dir) {
+  const W = 1080, H = 1920;
+  const base = `scale=${W}:${H}:force_original_aspect_ratio=increase:flags=lanczos,crop=${W}:${H},fps=30,setsar=1,unsharp=5:5:0.5`;
+  // 1) Las capas, cada una con su transparencia.
+  const layerFile = {};
+  for (const el of await page.$$(".layer[data-name]")) {
+    const name = await el.getAttribute("data-name");
+    const file = join(dir, `${name}.png`);
+    writeFileSync(file, await el.screenshot({ type: "png", omitBackground: name !== "mask" }));
+    layerFile[name] = file;
+  }
+  // 2) Las tomas: se bajan una vez y se cortan.
+  const got = {};
+  const segs = [];
+  for (const [i, c] of spec.cuts.entries()) {
+    if (!got[c.url]) {
+      const res = await fetch(c.url);
+      if (!res.ok) throw new Error(`No se pudo bajar la toma (${res.status}).`);
+      got[c.url] = join(dir, `toma-${Object.keys(got).length}.mp4`);
+      writeFileSync(got[c.url], Buffer.from(await res.arrayBuffer()));
+    }
+    const seg = join(dir, `corte-${i}.mp4`);
+    ff(["-ss", String(c.from), "-t", String(c.dur), "-i", got[c.url], "-vf", base, "-an", "-c:v", "libx264", "-threads", "2", "-crf", "16", "-pix_fmt", "yuv420p", seg]);
+    segs.push(seg);
+  }
+  const list = join(dir, "cortes.txt");
+  writeFileSync(list, segs.map((s) => `file '${s.replace(/\\/g, "/")}'`).join("\n"));
+  const joined = join(dir, "base.mp4");
+  ff(["-f", "concat", "-safe", "0", "-i", list, "-c", "copy", joined]);
+  // 3) La composición.
+  const loop = (file) => ["-loop", "1", "-framerate", "30", "-t", String(spec.duration + 1), "-i", file];
+  const inputs = ["-i", joined];
+  let n = 1;
+  let f = `[0:v]trim=0:${spec.duration},setpts=PTS-STARTPTS`;
+  let last;
+  if (spec.glass && layerFile.mask) {
+    inputs.push(...loop(layerFile.mask));
+    f += `,split[a][b];[b]gblur=sigma=26,eq=brightness=0.02[bl];[${n}:v]format=gray[m];[bl][m]alphamerge[glass];[a][glass]overlay=0:0:enable='between(t,${spec.glass.start},${spec.glass.end})'[v0];`;
+    n++;
+  } else f += `[v0];`;
+  last = "[v0]";
+  for (const [i, l] of spec.layers.entries()) {
+    if (!layerFile[l.name]) continue;
+    inputs.push(...loop(layerFile[l.name]));
+    const fade = l.fade > 0 ? `,fade=in:st=${l.start}:d=${l.fade}:alpha=1` : "";
+    const y = l.rise > 0 ? `'${l.rise}*max(0\\,1-(t-${l.start})/0.2)'` : "0";
+    f += `[${n}:v]format=rgba${fade}[c${i}];${last}[c${i}]overlay=x=0:y=${y}:enable='between(t,${l.start},${l.end})'[v${i + 1}];`;
+    last = `[v${i + 1}]`;
+    n++;
+  }
+  f = f.replace(/;$/, "");
+  const out = join(dir, "reel.mp4");
+  ff([...inputs, "-filter_complex", f, "-map", last, "-t", String(spec.duration), "-c:v", "libx264", "-threads", "4", "-preset", "medium", "-crf", "18", "-pix_fmt", "yuv420p", "-movflags", "+faststart", "-an", out]);
+  const poster = join(dir, "portada.png");
+  ff(["-ss", String(spec.poster), "-i", out, "-frames:v", "1", poster]);
+  return { video: out, poster };
+}
+
 async function main() {
   const html = LOCAL ? readFileSync(LOCAL, "utf8") : (await api("GET", `?op=html&id=${encodeURIComponent(PIECE)}`)).html;
   const browser = await chromium.launch();
@@ -55,6 +124,20 @@ async function main() {
   await page.waitForFunction(() => window.__ready === true, null, { timeout: 60000 });
   const qa = await page.evaluate(() => window.__qa);
   const files = [];
+  // Reel b-roll: un video sobre la toma del banco (y su portada).
+  const spec = await page.evaluate(() => window.__reel ?? null);
+  if (spec) {
+    const dir = mkdtempSync(join(tmpdir(), "reel-"));
+    const { video, poster } = await reel(page, spec, dir);
+    await browser.close();
+    files.push({ name: "01-reel.mp4", url: await save("01-reel.mp4", readFileSync(video), "video/mp4"), kind: "video" });
+    files.push({ name: "02-portada.png", url: await save("02-portada.png", readFileSync(poster), "image/png"), kind: "slide" });
+    const problems = qa.flatMap((q) => q.problems.map((p) => `${q.name}: ${p}`));
+    if (LOCAL) return console.log(JSON.stringify({ files: files.map((f) => f.url), problems }, null, 1));
+    // Un texto fuera de la zona segura no llega a Kristel: vuelve como error con el motivo.
+    if (problems.length) return api("POST", "", { op: "report", id: PIECE, status: "error", error: `Revisa el reel: ${problems.join(" · ")}`.slice(0, 300), runUrl: RUN_URL });
+    return api("POST", "", { op: "report", id: PIECE, status: "lista", files, qa: [], runUrl: RUN_URL });
+  }
   for (const shot of await page.$$(".shot")) {
     const name = await shot.getAttribute("data-name");
     const url = await save(name, await shot.screenshot({ type: "png" }), "image/png");
