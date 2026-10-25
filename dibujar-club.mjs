@@ -47,6 +47,37 @@ function coverVideo(photo, text, out) {
   if (r.status !== 0) throw new Error(`ffmpeg falló: ${(r.stderr ?? "").slice(-400)}`);
 }
 
+/**
+ * La foto real de la persona de la portada (2026-10-25): cada <img data-cutout> se recorta con rembg antes de sacar las
+ * imágenes. Es segmentación (separa a la persona del fondo), no IA generativa: la cara no cambia. Si algo falla, la foto
+ * queda con bordes suaves y se avisa en la revisión; nunca frena la pieza.
+ */
+async function cutouts(page, dir) {
+  const srcs = [...new Set(await page.$eval("img[data-cutout]", (els) => els.map((e) => e.src)))];
+  if (!srcs.length) return [];
+  if (spawnSync("rembg", ["--help"]).status !== 0) spawnSync("pipx", ["install", "rembg[cpu,cli]"], { stdio: "inherit" });
+  const problems = [];
+  for (const [i, src] of srcs.entries()) {
+    try {
+      const res = await fetch(src);
+      if (!res.ok) throw new Error(`no se pudo bajar (${res.status})`);
+      const input = join(dir, `cut-${i}.img`);
+      const output = join(dir, `cut-${i}.png`);
+      writeFileSync(input, Buffer.from(await res.arrayBuffer()));
+      const r = spawnSync("rembg", ["i", "-m", "isnet-general-use", input, output], { encoding: "utf8" });
+      if (r.status !== 0) throw new Error((r.stderr || "rembg falló").slice(-200));
+      const data = `data:image/png;base64,${readFileSync(output).toString("base64")}`;
+      await page.evaluate(([from, to]) => {
+        for (const el of document.querySelectorAll("img[data-cutout]")) if (el.src === from) (el.src = to), el.classList.remove("soft");
+      }, [src, data]);
+    } catch (e) {
+      problems.push(`portada: no se pudo recortar la foto de la persona (${e.message}); quedó con bordes suaves`);
+    }
+  }
+  await page.evaluate(() => Promise.all([...document.images].map((im) => im.decode().catch(() => null))));
+  return problems;
+}
+
 function ff(args) {
   const r = spawnSync("ffmpeg", ["-loglevel", "error", "-y", ...args], { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
   if (r.status !== 0) throw new Error(`ffmpeg falló: ${(r.stderr ?? "").slice(-500)}`);
@@ -138,7 +169,8 @@ async function main() {
     if (problems.length) return api("POST", "", { op: "report", id: PIECE, status: "error", error: `Revisa el reel: ${problems.join(" · ")}`.slice(0, 300), runUrl: RUN_URL });
     return api("POST", "", { op: "report", id: PIECE, status: "lista", files, qa: [], runUrl: RUN_URL });
   }
-  for (const shot of await page.$$(".shot")) {
+  const cutProblems = await cutouts(page, mkdtempSync(join(tmpdir(), "cut-")));
+  for (const shot of await page.$(".shot")) {
     const name = await shot.getAttribute("data-name");
     const url = await save(name, await shot.screenshot({ type: "png" }), "image/png");
     files.push({ name, url, kind: name.startsWith("historia") ? "story" : "slide" });
@@ -156,7 +188,7 @@ async function main() {
     files.unshift({ name: "01-portada.mp4", url, kind: "video" });
   }
   await browser.close();
-  const problems = qa.flatMap((q) => q.problems.map((p) => `${q.name}: ${p}`));
+  const problems = [...qa.flatMap((q) => q.problems.map((p) => `${q.name}: ${p}`)), ...cutProblems];
   if (LOCAL) return console.log(JSON.stringify({ files: files.map((f) => f.name), problems }, null, 1));
   await api("POST", "", { op: "report", id: PIECE, status: "lista", files, qa: problems, runUrl: RUN_URL });
 }

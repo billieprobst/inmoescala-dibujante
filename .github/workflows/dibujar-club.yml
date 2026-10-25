@@ -29,6 +29,14 @@ jobs:
         with:
           path: ~/.cache/ms-playwright
           key: playwright-1.52.0
+      - name: Recorte de fotos en caché (rembg y su modelo; se instala solo si una portada lo pide)
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.u2net
+            ~/.local/share/pipx
+            ~/.local/bin
+          key: rembg-isnet-1
       - name: Instalar Playwright y ffmpeg
         run: |
           npm install --no-audit --no-fund
