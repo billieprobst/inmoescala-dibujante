@@ -53,7 +53,7 @@ function coverVideo(photo, text, out) {
  * queda con bordes suaves y se avisa en la revisión; nunca frena la pieza.
  */
 async function cutouts(page, dir) {
-  const srcs = [...new Set(await page.$eval("img[data-cutout]", (els) => els.map((e) => e.src)))];
+  const srcs = [...new Set(await page.$$eval("img[data-cutout]", (els) => els.map((e) => e.src)))];
   if (!srcs.length) return [];
   if (spawnSync("rembg", ["--help"]).status !== 0) spawnSync("pipx", ["install", "rembg[cpu,cli]"], { stdio: "inherit" });
   const problems = [];
@@ -170,7 +170,7 @@ async function main() {
     return api("POST", "", { op: "report", id: PIECE, status: "lista", files, qa: [], runUrl: RUN_URL });
   }
   const cutProblems = await cutouts(page, mkdtempSync(join(tmpdir(), "cut-")));
-  for (const shot of await page.$(".shot")) {
+  for (const shot of await page.$$(".shot")) {
     const name = await shot.getAttribute("data-name");
     const url = await save(name, await shot.screenshot({ type: "png" }), "image/png");
     files.push({ name, url, kind: name.startsWith("historia") ? "story" : "slide" });
